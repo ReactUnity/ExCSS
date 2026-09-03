@@ -846,6 +846,33 @@ namespace ExCSS
         }
 
         /// <summary>
+        /// The text a rule nested inside <paramref name="rule"/> resolves against. Its serialized
+        /// selector will not do: the lexer resolves an escape while reading, so serializing it back
+        /// yields a different selector -- <c>.a\:b</c> as <c>.a:b</c>, a class followed by an
+        /// unknown pseudo-class -- which then fails to parse, and the nested rule is lost. The text
+        /// a rule was read from keeps its escapes, and for a rule that was itself nested that is the
+        /// resolved text <see cref="AttachSelectorText"/> gave it.
+        /// </summary>
+        private static string NestingBase(StyleRule rule)
+        {
+            var source = rule.Selector?.StylesheetText?.Text;
+            return string.IsNullOrWhiteSpace(source) ? rule.SelectorText : source.Trim();
+        }
+
+        /// <summary>
+        /// Records the text a nested rule's selector was resolved from. A rule read from the source
+        /// carries one already; a nested rule has no source of its own, and without this a rule
+        /// nested inside it would have nothing to resolve against but the lossy serialization.
+        /// </summary>
+        private static void AttachSelectorText(StyleRule rule, string text)
+        {
+            if (string.IsNullOrEmpty(text) || !(rule.Selector is StylesheetNode node)) return;
+
+            var range = new TextRange(new TextPosition(1, 1, 1), new TextPosition(1, 1, text.Length));
+            node.StylesheetText = new StylesheetText(range, new TextSource(text));
+        }
+
+        /// <summary>
         /// CSS Nesting: a conditional group rule written inside a style rule's block. Its
         /// declarations belong to an implicit style rule carrying the enclosing rule's own
         /// selector, so <c>.a { @media (...) { color: red } }</c> is
@@ -865,7 +892,7 @@ namespace ExCSS
             else return false;
 
             var start = token.Position;
-            var parentSelector = parent.SelectorText;
+            var parentSelector = NestingBase(parent);
 
             token = NextToken();
             _nodes.Push(rule);
@@ -884,10 +911,10 @@ namespace ExCSS
                 return true;
             }
 
-            var implicitRule = new StyleRule(_parser)
-            {
-                Selector = _parser.ParseSelector(ResolveNestedSelector("&", parentSelector)),
-            };
+            var implicitText = ResolveNestedSelector("&", parentSelector);
+            var implicitRule = new StyleRule(_parser) { Selector = _parser.ParseSelector(implicitText) };
+
+            AttachSelectorText(implicitRule, implicitText);
 
             rule.AppendChild(implicitRule);
 
@@ -993,23 +1020,26 @@ namespace ExCSS
             var parent = _nodes.OfType<StyleRule>().FirstOrDefault();
             var preludeText = _lexer.Source.Text.Substring(preludeStart, braceStart - preludeStart);
 
-            var selector = parent == null
-                ? null
-                : _parser.ParseSelector(ResolveNestedSelector(preludeText, parent.SelectorText));
+            var resolvedText = parent == null ? null : ResolveNestedSelector(preludeText, NestingBase(parent));
+            var selector = resolvedText == null ? null : _parser.ParseSelector(resolvedText);
 
             // Always consume the block (via a rule pushed on _nodes so nested-within-nested resolves) to
             // keep the parser in sync; only attach it when the selector actually resolved.
             var rule = new StyleRule(_parser);
 
             if (selector != null)
+            {
                 rule.Selector = selector;
+
+                // Before the block is read, since a rule nested inside it resolves against this text.
+                AttachSelectorText(rule, resolvedText);
+            }
 
             _nodes.Push(rule);
             FillDeclarations(rule.Style);
             _nodes.Pop();
 
-            if (parent != null && selector != null)
-                parent.AddNestedRule(rule);
+            if (parent != null && selector != null) parent.AddNestedRule(rule);
         }
 
         /// <summary>

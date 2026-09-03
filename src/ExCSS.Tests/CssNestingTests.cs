@@ -182,5 +182,41 @@ namespace ExCSS.Tests
             Assert.Empty(rule.NestedRules);
             Assert.Equal(ParseRule("x { color: #0000ff; }").Style["color"], rule.Style["color"]);
         }
+
+        [Fact]
+        public void AnEscapedSelectorKeepsItsEscapesWhenNestedInto()
+        {
+            // The parent's serialized selector is `.hover:underline` -- a class followed by an
+            // unknown pseudo-class -- which does not parse, so before this the nested rule was lost.
+            var rule = ParseRule(@".hover\:underline { & span { color: #0000ff; } }");
+            var nested = Nested(rule);
+            Assert.Equal(@":is(.hover\:underline) span", nested.Selector.StylesheetText.Text);
+        }
+
+        [Fact]
+        public void AHexEscapeSurvivesResolution()
+        {
+            // A class name starting with a digit can only be written this way.
+            var rule = ParseRule(@".\32 xl\:flex { & span { color: #0000ff; } }");
+            Assert.Equal(@":is(.\32 xl\:flex) span", Nested(rule).Selector.StylesheetText.Text);
+        }
+
+        [Fact]
+        public void AnEscapeSurvivesEveryLevelOfNesting()
+        {
+            var rule = ParseRule(@".w-1\/2 { & .b { & .c { color: #0000ff; } } }");
+            var b = Nested(rule);
+            Assert.Equal(@":is(.w-1\/2) .b", b.Selector.StylesheetText.Text);
+            Assert.Equal(@":is(:is(.w-1\/2) .b) .c", Nested(b).Selector.StylesheetText.Text);
+        }
+
+        [Fact]
+        public void AnEscapedSelectorKeepsItsEscapesInANestedConditionalRule()
+        {
+            var rule = ParseRule(@".hover\:underline { @media (min-width: 600px) { color: #0000ff; } }");
+            var media = Assert.IsAssignableFrom<IMediaRule>(Assert.Single(rule.NestedRules));
+            var implicitRule = Assert.IsAssignableFrom<IStyleRule>(Assert.Single(media.Rules));
+            Assert.Equal(@":is(.hover\:underline)", implicitRule.Selector.StylesheetText.Text);
+        }
     }
 }
