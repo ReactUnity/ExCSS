@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 
 namespace ExCSS
 {
@@ -9,9 +9,11 @@ namespace ExCSS
         ISelector Selector { get; set; }
 
         /// <summary>
-        /// CSS Nesting: style rules nested inside this rule's block, each already resolved to an
-        /// absolute selector against this (parent) rule. Empty for a non-nesting rule.
+        /// CSS Nesting: rules nested inside this rule's block. A nested style rule is already
+        /// resolved to an absolute selector against this (parent) rule; a nested conditional group
+        /// rule holds an implicit style rule carrying this rule's own selector. Empty for a
+        /// non-nesting rule.
         /// </summary>
-        IReadOnlyList<IStyleRule> NestedRules { get; }
+        IReadOnlyList<IRule> NestedRules { get; }
     }
 }

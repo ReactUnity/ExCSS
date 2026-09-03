@@ -8,7 +8,7 @@ namespace ExCSS
     public sealed class MarginStyleRule : Rule, IStyleRule
     {
         // @page margin boxes don't participate in CSS Nesting.
-        public IReadOnlyList<IStyleRule> NestedRules => Array.Empty<IStyleRule>();
+        public IReadOnlyList<IRule> NestedRules => Array.Empty<IRule>();
 
         public MarginStyleRule(StylesheetParser parser) : base(RuleType.Style, parser)
         {

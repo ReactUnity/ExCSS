@@ -15,12 +15,19 @@ namespace ExCSS.Tests
         private static StyleRule ParseRule(string source) =>
             (StyleRule)ParseStyleSheet(source).Rules.First();
 
+        /// <summary>
+        /// The single rule nested in <paramref name="rule"/>, as a style rule. NestedRules holds
+        /// IRule, since a nested conditional group rule is not a style rule.
+        /// </summary>
+        private static IStyleRule Nested(IStyleRule rule) =>
+            Assert.IsAssignableFrom<IStyleRule>(Assert.Single(rule.NestedRules));
+
         [Fact]
         public void ImplicitAmpersandCompoundResolvesToIsParent()
         {
             // `&.active` == `:is(.box).active` — the same element carrying both classes.
             var rule = ParseRule(".box { &.active { color: #0000ff; } }");
-            var nested = Assert.Single(rule.NestedRules);
+            var nested = Nested(rule);
             Assert.Equal(":is(.box).active", nested.SelectorText);
         }
 
@@ -30,7 +37,7 @@ namespace ExCSS.Tests
             // `& span` == `:is(.box) span` (descendant).
             var rule = ParseRule(".box { color: #ff0000; & span { color: #0000ff; } }");
             Assert.Equal(".box", rule.SelectorText);
-            var nested = Assert.Single(rule.NestedRules);
+            var nested = Nested(rule);
             Assert.Equal(":is(.box) span", nested.SelectorText);
         }
 
@@ -40,7 +47,7 @@ namespace ExCSS.Tests
             // `p { ... }` inside a block starts with an Ident (like a property name) — the classifier must
             // still see the `{` before any `;` and treat it as a nested rule.
             var rule = ParseRule(".card { p { color: #0000ff; } }");
-            var nested = Assert.Single(rule.NestedRules);
+            var nested = Nested(rule);
             Assert.Equal(":is(.card) p", nested.SelectorText);
         }
 
@@ -49,7 +56,7 @@ namespace ExCSS.Tests
         {
             // A prelude with no `&` is made relative to the parent: `.inner` → `:is(.card) .inner`.
             var rule = ParseRule(".card { .inner { color: #0000ff; } }");
-            var nested = Assert.Single(rule.NestedRules);
+            var nested = Nested(rule);
             Assert.Equal(":is(.card) .inner", nested.SelectorText);
         }
 
@@ -58,7 +65,7 @@ namespace ExCSS.Tests
         {
             // `> p` == `:is(.card) > p` — only a direct child p matches.
             var rule = ParseRule(".card { > p { color: #0000ff; } }");
-            var nested = Assert.Single(rule.NestedRules);
+            var nested = Nested(rule);
             Assert.Equal(":is(.card)>p", nested.SelectorText);
         }
 
@@ -67,7 +74,7 @@ namespace ExCSS.Tests
         {
             // Regression: the classify-then-rewind must not corrupt a `#rrggbb` value (value-mode `#`
             // tokenization) the way a token buffer would. Compare against a non-nested equivalent.
-            var nested = Assert.Single(ParseRule(".card { p { color: #123456; } }").NestedRules);
+            var nested = Nested(ParseRule(".card { p { color: #123456; } }"));
             var direct = ParseRule("p { color: #123456; }");
             Assert.Equal(direct.Style["color"], nested.Style["color"]);
             Assert.NotEqual(string.Empty, nested.Style["color"]);
@@ -101,7 +108,7 @@ namespace ExCSS.Tests
             // (Custom-property value storage is a separate feature; here we only assert the `--x` declaration
             // is not swallowed as a nested rule and the real nested rule is still captured.)
             var rule = ParseRule(".card { --x: 1; & span { color: #0000ff; } }");
-            var nested = Assert.Single(rule.NestedRules);
+            var nested = Nested(rule);
             Assert.Equal(":is(.card) span", nested.SelectorText);
         }
 
@@ -110,9 +117,9 @@ namespace ExCSS.Tests
         {
             // `.a { & .b { & .c { … } } }` → `:is(.a) .b`, then `:is(:is(.a) .b) .c`.
             var a = ParseRule(".a { & .b { & .c { color: #0000ff; } } }");
-            var b = Assert.Single(a.NestedRules);
+            var b = Nested(a);
             Assert.Equal(":is(.a) .b", b.SelectorText);
-            var c = Assert.Single(b.NestedRules);
+            var c = Nested(b);
             Assert.Equal(":is(:is(.a) .b) .c", c.SelectorText);
         }
 
@@ -122,9 +129,58 @@ namespace ExCSS.Tests
             // Regression: a `&` inside an attribute-value string must NOT be substituted, and a prelude whose
             // only `&` is inside a string is still scoped under the parent (not the replace branch).
             var rule = ParseRule(".card { [data-x=\"a&b\"] { color: #0000ff; } }");
-            var nested = Assert.Single(rule.NestedRules);
+            var nested = Nested(rule);
             Assert.StartsWith(":is(.card)", nested.SelectorText);
             Assert.Contains("a&b", nested.SelectorText);
+        }
+        [Fact]
+        public void NestedSupportsBecomesAConditionalRule()
+        {
+            // `.a { @supports (c) { color: … } }` == `@supports (c) { :is(.a) { color: … } }`: the
+            // declarations belong to an implicit rule carrying the enclosing selector.
+            var rule = ParseRule(".card { color: #ff0000; @supports (color: #0000ff) { color: #0000ff; } }");
+            var supports = Assert.IsAssignableFrom<ISupportsRule>(Assert.Single(rule.NestedRules));
+            Assert.Equal("(color: #0000ff)", supports.ConditionText);
+            var implicitRule = Assert.IsAssignableFrom<IStyleRule>(Assert.Single(((IGroupingRule)supports).Rules));
+            Assert.Equal(":is(.card)", implicitRule.SelectorText);
+            Assert.Equal(ParseRule("x { color: #0000ff; }").Style["color"], implicitRule.Style["color"]);
+        }
+
+        [Fact]
+        public void NestedMediaBecomesAConditionalRule()
+        {
+            var rule = ParseRule(".card { @media (min-width: 600px) { color: #0000ff; } }");
+            var media = Assert.IsAssignableFrom<IMediaRule>(Assert.Single(rule.NestedRules));
+            Assert.Equal("(min-width: 600px)", media.ConditionText);
+            var implicitRule = Assert.IsAssignableFrom<IStyleRule>(Assert.Single(media.Rules));
+            Assert.Equal(":is(.card)", implicitRule.SelectorText);
+        }
+
+        [Fact]
+        public void ARuleNestedInsideANestedConditionalRuleResolvesAgainstTheEnclosingSelector()
+        {
+            var rule = ParseRule(".card { @supports (color: #0000ff) { & span { color: #0000ff; } } }");
+            var supports = Assert.IsAssignableFrom<ISupportsRule>(Assert.Single(rule.NestedRules));
+            var implicitRule = Assert.IsAssignableFrom<IStyleRule>(Assert.Single(((IGroupingRule)supports).Rules));
+            // Wrapped twice, since it resolves against the implicit rule's own `:is(.card)`.
+            Assert.Equal(":is(:is(.card)) span", Nested(implicitRule).SelectorText);
+        }
+
+        [Fact]
+        public void ADeclarationAfterANestedConditionalRuleStillApplies()
+        {
+            // The at-rule's block has to be consumed exactly, or the outer loop resumes in the wrong place.
+            var rule = ParseRule(".card { @media (min-width: 600px) { color: #00ff00; } color: #0000ff; }");
+            Assert.Equal(ParseRule("x { color: #0000ff; }").Style["color"], rule.Style["color"]);
+            Assert.Single(rule.NestedRules);
+        }
+
+        [Fact]
+        public void ANestedConditionalRuleWithNoBlockIsSkipped()
+        {
+            var rule = ParseRule(".card { @media (min-width: 600px); color: #0000ff; }");
+            Assert.Empty(rule.NestedRules);
+            Assert.Equal(ParseRule("x { color: #0000ff; }").Style["color"], rule.Style["color"]);
         }
     }
 }

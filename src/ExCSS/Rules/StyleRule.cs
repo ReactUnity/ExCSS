@@ -9,7 +9,7 @@ namespace ExCSS
         // CSS Nesting: rules written inside this rule's block, resolved to absolute selectors against
         // this parent. Kept in a dedicated list (not Children) so Selector/Style lookups and ToCss are
         // unaffected. Populated by StylesheetComposer.FillDeclarations.
-        private readonly List<IStyleRule> _nestedRules = new List<IStyleRule>();
+        private readonly List<IRule> _nestedRules = new List<IRule>();
 
         public StyleRule(StylesheetParser parser) : base(RuleType.Style, parser)
         {
@@ -17,9 +17,9 @@ namespace ExCSS
             AppendChild(new StyleDeclaration(this));
         }
 
-        public IReadOnlyList<IStyleRule> NestedRules => _nestedRules;
+        public IReadOnlyList<IRule> NestedRules => _nestedRules;
 
-        public void AddNestedRule(IStyleRule rule) => _nestedRules.Add(rule);
+        public void AddNestedRule(IRule rule) => _nestedRules.Add(rule);
 
         public override void ToCss(TextWriter writer, IStyleFormatter formatter)
         {

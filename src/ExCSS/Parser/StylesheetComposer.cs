@@ -764,7 +764,7 @@ namespace ExCSS
                         // further margin box) was dropped. Advance to the next real token instead.
                         token = NextToken();
                     }
-                    else
+                    else if (!TryCreateNestedConditionalRule(ref token))
                     {
                         // Advance to the next token or this is an endless loop
                         token = NextToken();
@@ -843,6 +843,65 @@ namespace ExCSS
 
             _nodes.Pop();
             return token.Position;
+        }
+
+        /// <summary>
+        /// CSS Nesting: a conditional group rule written inside a style rule's block. Its
+        /// declarations belong to an implicit style rule carrying the enclosing rule's own
+        /// selector, so <c>.a { @media (...) { color: red } }</c> is
+        /// <c>@media (...) { :is(.a) { color: red } }</c> (CSS Nesting 1 &#xA7;3). Returns true with
+        /// <paramref name="token"/> advanced past the block, false for an at-rule that cannot
+        /// appear here, leaving the caller to skip it.
+        /// </summary>
+        private bool TryCreateNestedConditionalRule(ref Token token)
+        {
+            var parent = _nodes.OfType<StyleRule>().FirstOrDefault();
+            if (parent == null) return false;
+
+            ConditionRule rule;
+
+            if (token.Data.Isi(RuleNames.Media)) rule = new MediaRule(_parser);
+            else if (token.Data.Isi(RuleNames.Supports)) rule = new SupportsRule(_parser);
+            else return false;
+
+            var start = token.Position;
+            var parentSelector = parent.SelectorText;
+
+            token = NextToken();
+            _nodes.Push(rule);
+            ParseComments(ref token);
+
+            if (rule is MediaRule mediaRule) FillMediaList(mediaRule.Media, TokenType.CurlyBracketOpen, ref token);
+            else ((SupportsRule) rule).Condition = AggregateCondition(ref token);
+
+            ParseComments(ref token);
+
+            if (token.Type != TokenType.CurlyBracketOpen)
+            {
+                _nodes.Pop();
+                SkipDeclarations(token);
+                token = NextToken();
+                return true;
+            }
+
+            var implicitRule = new StyleRule(_parser)
+            {
+                Selector = _parser.ParseSelector(ResolveNestedSelector("&", parentSelector)),
+            };
+
+            rule.AppendChild(implicitRule);
+
+            // Pushed so that a style rule nested one level deeper resolves against the implicit
+            // rule's selector, which is the enclosing rule's, rather than skipping a level.
+            _nodes.Push(implicitRule);
+            var end = FillDeclarations(implicitRule.Style);
+            _nodes.Pop();
+            _nodes.Pop();
+
+            rule.StylesheetText = CreateView(start, end);
+            parent.AddNestedRule(rule);
+            token = NextToken();
+            return true;
         }
 
         /// <summary>
