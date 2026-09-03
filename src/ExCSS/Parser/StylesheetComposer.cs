@@ -776,7 +776,14 @@ namespace ExCSS
                 }
                 else
                 {
-                    var sourceProperty = CreateDeclarationWith(PropertyFactory.Instance.Create, ref token);
+                    // RawDeclarations keeps every declaration exactly as it was written: no typed
+                    // property, so no value normalisation, and no shorthand expansion below. For a
+                    // host whose property set is not the web's, that expansion is wrong rather than
+                    // merely unhelpful.
+                    var createDeclaration = _parser.Options.RawDeclarations
+                        ? RawDeclaration
+                        : new Func<string, Property>(PropertyFactory.Instance.Create);
+                    var sourceProperty = CreateDeclarationWith(createDeclaration, ref token);
                     var resolvedProperties = new[] {sourceProperty};
 
                     if (sourceProperty is {HasValue: true})
@@ -999,6 +1006,8 @@ namespace ExCSS
 
             return hasNestingSelector ? sb.ToPool() : parentIs + " " + sb.ToPool();
         }
+
+        private static readonly Func<string, Property> RawDeclaration = name => new UnknownProperty(name);
 
         public Property CreateDeclarationWith(Func<string, Property> createProperty, ref Token token)
         {
