@@ -51,6 +51,8 @@ namespace ExCSS
 
             if (token.Data.Is(RuleNames.FontPaletteValues)) return CreateFontPaletteValues(token);
 
+            if (token.Data.Is(RuleNames.StartingStyle)) return CreateStartingStyle(token);
+
             return token.Data.Is(RuleNames.Document) ? CreateDocument(token) : CreateUnknown(token);
         }
 
@@ -357,52 +359,68 @@ namespace ExCSS
             var token = NextToken();
             _nodes.Push(rule);
             ParseComments(ref token);
-            rule.Name = GetRuleName(ref token);
-            ParseComments(ref token);
-            FillMediaList(rule.Media, TokenType.CurlyBracketOpen, ref token);
-            ParseComments(ref token);
+            FillContainerPrelude(rule, ref token);
 
             if (token.Type != TokenType.CurlyBracketOpen)
-                while (token.Type != TokenType.EndOfFile)
-                {
-                    if (token.Type == TokenType.Semicolon)
-                    {
-                        _nodes.Pop();
-                        return null;
-                    }
-
-                    if (token.Type == TokenType.CurlyBracketOpen) break;
-
-                    token = NextToken();
-                }
+            {
+                _nodes.Pop();
+                return null;
+            }
 
             var end = FillRules(rule);
             rule.StylesheetText = CreateView(start, end);
             _nodes.Pop();
             return rule;
+        }
 
-            //ParseComments(ref token);
-            //rule.Condition = AggregateCondition(ref token);
-            //ParseComments(ref token);
+        /// <summary>
+        /// <c>@starting-style { rules }</c> (CSS Transitions 2). The rule takes no prelude; anything
+        /// before its block invalidates it, and the block is skipped.
+        /// </summary>
+        public Rule CreateStartingStyle(Token current)
+        {
+            var start = current.Position;
+            var token = NextToken();
+            ParseComments(ref token);
 
-            //if (token.Type != TokenType.CurlyBracketOpen)
-            //    while (token.Type != TokenType.EndOfFile)
-            //    {
-            //        if (token.Type == TokenType.Semicolon)
-            //        {
-            //            _nodes.Pop();
-            //            return null;
-            //        }
+            if (token.Type != TokenType.CurlyBracketOpen) return SkipDeclarations(token);
 
-            //        if (token.Type == TokenType.CurlyBracketOpen) break;
+            var rule = new StartingStyleRule(_parser);
+            _nodes.Push(rule);
+            var end = FillRules(rule);
+            rule.StylesheetText = CreateView(start, end);
+            _nodes.Pop();
+            return rule;
+        }
 
-            //        token = NextToken();
-            //    }
+        /// <summary>
+        /// Reads a container query prelude: an optional name, then the condition, which is kept as
+        /// written because a container query is not a media query (range syntax, <c>style()</c>).
+        /// Leaves <paramref name="token"/> on the block's <c>{</c>, or on the <c>;</c> or end of file
+        /// that means there is none.
+        /// </summary>
+        private void FillContainerPrelude(ContainerRule rule, ref Token token)
+        {
+            // `not` opens a negated condition rather than naming the container.
+            rule.Name = token.Type == TokenType.Ident && !token.Data.Isi(Keywords.Not) ? GetRuleName(ref token) : string.Empty;
+            ParseComments(ref token);
+            rule.ConditionText = ReadRawPrelude(ref token);
+        }
 
-            //var end = FillRules(rule);
-            //rule.StylesheetText = CreateView(start, end);
-            //_nodes.Pop();
-            //return rule;
+        /// <summary>
+        /// The source text from the current token up to, not including, the next top-level <c>{</c>,
+        /// <c>;</c> or end of file, which <paramref name="token"/> is left on. Read from the raw source
+        /// by the lexer's insertion marks, as the nesting code does, so escapes and spacing survive.
+        /// </summary>
+        private string ReadRawPrelude(ref Token token)
+        {
+            var start = _markBeforeLastToken;
+
+            while (token.IsNot(TokenType.EndOfFile, TokenType.CurlyBracketOpen, TokenType.Semicolon))
+                token = NextToken();
+
+            var end = _markBeforeLastToken;
+            return end > start ? _lexer.Source.Text.Substring(start, end - start).Trim() : string.Empty;
         }
         public Rule CreateNamespace(Token current)
         {
@@ -873,22 +891,24 @@ namespace ExCSS
         }
 
         /// <summary>
-        /// CSS Nesting: a conditional group rule written inside a style rule's block. Its
-        /// declarations belong to an implicit style rule carrying the enclosing rule's own
-        /// selector, so <c>.a { @media (...) { color: red } }</c> is
-        /// <c>@media (...) { :is(.a) { color: red } }</c> (CSS Nesting 1 &#xA7;3). Returns true with
-        /// <paramref name="token"/> advanced past the block, false for an at-rule that cannot
-        /// appear here, leaving the caller to skip it.
+        /// CSS Nesting: a group rule written inside a style rule's block -- <c>@media</c>,
+        /// <c>@supports</c>, <c>@container</c> or <c>@starting-style</c>. Its declarations belong to
+        /// an implicit style rule carrying the enclosing rule's own selector, so
+        /// <c>.a { @media (...) { color: red } }</c> is <c>@media (...) { :is(.a) { color: red } }</c>
+        /// (CSS Nesting 1 &#xA7;3). Returns true with <paramref name="token"/> advanced past the
+        /// block, false for an at-rule that cannot appear here, leaving the caller to skip it.
         /// </summary>
         private bool TryCreateNestedConditionalRule(ref Token token)
         {
             var parent = _nodes.OfType<StyleRule>().FirstOrDefault();
             if (parent == null) return false;
 
-            ConditionRule rule;
+            GroupingRule rule;
 
             if (token.Data.Isi(RuleNames.Media)) rule = new MediaRule(_parser);
             else if (token.Data.Isi(RuleNames.Supports)) rule = new SupportsRule(_parser);
+            else if (token.Data.Isi(RuleNames.Container)) rule = new ContainerRule(_parser);
+            else if (token.Data.Isi(RuleNames.StartingStyle)) rule = new StartingStyleRule(_parser);
             else return false;
 
             var start = token.Position;
@@ -898,8 +918,18 @@ namespace ExCSS
             _nodes.Push(rule);
             ParseComments(ref token);
 
-            if (rule is MediaRule mediaRule) FillMediaList(mediaRule.Media, TokenType.CurlyBracketOpen, ref token);
-            else ((SupportsRule) rule).Condition = AggregateCondition(ref token);
+            switch (rule)
+            {
+                case MediaRule mediaRule:
+                    FillMediaList(mediaRule.Media, TokenType.CurlyBracketOpen, ref token);
+                    break;
+                case SupportsRule supportsRule:
+                    supportsRule.Condition = AggregateCondition(ref token);
+                    break;
+                case ContainerRule containerRule:
+                    FillContainerPrelude(containerRule, ref token);
+                    break;
+            }
 
             ParseComments(ref token);
 
