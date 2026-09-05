@@ -55,6 +55,18 @@ namespace ExCSS.Tests
             Assert.Equal("a:is(.foo,#bar)", ParseSelector("a:is(.foo, #bar)").Text);
         }
 
+        [Fact]
+        public void WhereMatchesLikeIsButAddsNoSpecificity()
+        {
+            var matches = Assert.IsType<MatchesSelector>(Subject("a:where(.foo, #bar)"));
+
+            Assert.Equal("where", matches.Keyword);
+            Assert.Equal("a:where(.foo,#bar)", ParseSelector("a:where(.foo, #bar)").Text);
+            Assert.Equal(Priority.Zero, matches.Specificity);
+            // CSS Selectors 4 16.1: the whole selector counts only the `a`.
+            Assert.Equal(new Priority(0, 0, 0, 1), ParseSelector("a:where(.foo, #bar)").Specificity);
+        }
+
         [Theory]
         // CSS Selectors 4 16.1: the specificity of :is()/:not()/:has() is that of the most specific complex
         // selector in the argument. Priority is (inline, id, class, type).
