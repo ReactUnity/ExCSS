@@ -193,5 +193,49 @@
             Assert.Equal("not (display: flex)", supports.ConditionText);
             Assert.False(supports.Condition.Check());
         }
+
+        // A function query -- selector(), font-tech(), or one not defined yet -- is valid CSS the
+        // condition grammar has no node for. The prelude is kept as written for a consumer to evaluate.
+        [Theory]
+        [InlineData("@supports selector(#root:has(> .a ~ .b)) { }", "selector(#root:has(> .a ~ .b))")]
+        [InlineData("@supports not selector(.a:popover-open) { }", "not selector(.a:popover-open)")]
+        [InlineData("@supports (display: flex) and selector(::marker) { }", "(display: flex) and selector(::marker)")]
+        [InlineData("@supports font-tech(color-COLRv1) { }", "font-tech(color-COLRv1)")]
+        public void SupportsFunctionQueryIsKeptAsWritten(string source, string condition)
+        {
+            var sheet = ParseStyleSheet(source);
+            var supports = Assert.IsType<SupportsRule>(Assert.Single(sheet.Rules));
+            Assert.Equal(condition, supports.ConditionText);
+        }
+
+        [Fact]
+        public void SupportsFunctionQueryKeepsItsBlockAndWhatFollows()
+        {
+            var sheet = ParseStyleSheet("@supports selector(.a) { .a { color: red; } } .b { color: blue; }");
+            Assert.Equal(2, sheet.Rules.Length);
+            var supports = Assert.IsType<SupportsRule>(sheet.Rules[0]);
+            Assert.Equal(1, supports.Rules.Length);
+            Assert.IsType<StyleRule>(sheet.Rules[1]);
+        }
+
+        [Fact]
+        public void SupportsFunctionQueryNestedInAStyleRule()
+        {
+            var sheet = ParseStyleSheet(".card { @supports selector(.a) { color: #0000ff; } }");
+            var parent = Assert.IsAssignableFrom<IStyleRule>(Assert.Single(sheet.Rules));
+            var supports = Assert.IsAssignableFrom<ISupportsRule>(Assert.Single(parent.NestedRules));
+            Assert.Equal("selector(.a)", supports.ConditionText);
+            Assert.Single(((IGroupingRule)supports).Rules);
+        }
+
+        [Fact]
+        public void SupportsConditionTextSetToAFunctionQueryIsKept()
+        {
+            var supports = ParseStyleSheet("@supports (color: red) { }").Rules[0] as SupportsRule;
+            supports.ConditionText = "selector(.a)";
+            Assert.Equal("selector(.a)", supports.ConditionText);
+            supports.ConditionText = "(color:  blue)";
+            Assert.Equal("(color: blue)", supports.ConditionText);
+        }
     }
 }

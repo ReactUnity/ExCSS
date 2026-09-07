@@ -433,14 +433,37 @@ namespace ExCSS
         }
 
         /// <summary>
+        /// Reads a supports prelude, leaving <paramref name="token"/> on the block's <c>{</c> or on
+        /// what ends the rule instead. A prelude the condition grammar cannot read to the block is
+        /// kept as written: <c>selector()</c>, and every other function, is valid CSS it has no node
+        /// for. False when nothing a condition can start with does, a bare declaration say.
+        /// </summary>
+        private bool FillSupportsPrelude(SupportsRule rule, ref Token token)
+        {
+            var start = _markBeforeLastToken;
+            var valid = token.Type == TokenType.RoundBracketOpen || token.Type == TokenType.Function || token.Data.Isi(Keywords.Not);
+            var condition = AggregateCondition(ref token);
+            ParseComments(ref token);
+
+            if (token.Type == TokenType.CurlyBracketOpen)
+            {
+                rule.Condition = condition;
+                return true;
+            }
+
+            rule.ConditionText = ReadRawPrelude(ref token, start);
+            return valid;
+        }
+
+        /// <summary>
         /// The source text from the current token up to, not including, the next top-level <c>{</c>,
         /// <c>;</c> or end of file, which <paramref name="token"/> is left on. Read from the raw source
         /// by the lexer's insertion marks, as the nesting code does, so escapes and spacing survive.
         /// </summary>
-        private string ReadRawPrelude(ref Token token)
-        {
-            var start = _markBeforeLastToken;
+        private string ReadRawPrelude(ref Token token) => ReadRawPrelude(ref token, _markBeforeLastToken);
 
+        private string ReadRawPrelude(ref Token token, int start)
+        {
             while (token.IsNot(TokenType.EndOfFile, TokenType.CurlyBracketOpen, TokenType.Semicolon))
                 token = NextToken();
 
@@ -501,10 +524,10 @@ namespace ExCSS
             var token = NextToken();
             _nodes.Push(rule);
             ParseComments(ref token);
-            rule.Condition = AggregateCondition(ref token);
+            var valid = FillSupportsPrelude(rule, ref token);
             ParseComments(ref token);
 
-            if (token.Type == TokenType.CurlyBracketOpen)
+            if (token.Type == TokenType.CurlyBracketOpen && valid)
             {
                 var end = FillRules(rule);
                 rule.StylesheetText = CreateView(start, end);
@@ -958,7 +981,7 @@ namespace ExCSS
                     FillMediaList(mediaRule.Media, TokenType.CurlyBracketOpen, ref token);
                     break;
                 case SupportsRule supportsRule:
-                    supportsRule.Condition = AggregateCondition(ref token);
+                    valid = FillSupportsPrelude(supportsRule, ref token);
                     break;
                 case ContainerRule containerRule:
                     FillContainerPrelude(containerRule, ref token);
