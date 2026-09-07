@@ -142,6 +142,8 @@ namespace ExCSS
                     return new ContainerRule(parser);
                 case RuleType.StartingStyle:
                     return new StartingStyleRule(parser);
+                case RuleType.Scope:
+                    return new ScopeRule(parser);
                 case RuleType.Namespace:
                     return new NamespaceRule(parser);
                 case RuleType.Page:

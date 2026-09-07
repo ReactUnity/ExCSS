@@ -53,6 +53,8 @@ namespace ExCSS
 
             if (token.Data.Is(RuleNames.StartingStyle)) return CreateStartingStyle(token);
 
+            if (token.Data.Is(RuleNames.Scope)) return CreateScope(token);
+
             return token.Data.Is(RuleNames.Document) ? CreateDocument(token) : CreateUnknown(token);
         }
 
@@ -386,6 +388,29 @@ namespace ExCSS
             if (token.Type != TokenType.CurlyBracketOpen) return SkipDeclarations(token);
 
             var rule = new StartingStyleRule(_parser);
+            _nodes.Push(rule);
+            var end = FillRules(rule);
+            rule.StylesheetText = CreateView(start, end);
+            _nodes.Pop();
+            return rule;
+        }
+
+        /// <summary>
+        /// <c>@scope (start) to (end) { rules }</c> (CSS Cascade 6). Both selector lists are kept as
+        /// written and either may be left out; any other prelude invalidates the rule, and the
+        /// block is skipped. The block's own rules are scoped, see <see cref="FillRules"/>.
+        /// </summary>
+        public Rule CreateScope(Token current)
+        {
+            var start = current.Position;
+            var token = NextToken();
+            ParseComments(ref token);
+
+            var rule = new ScopeRule(_parser);
+            var valid = rule.SetPrelude(ReadRawPrelude(ref token));
+
+            if (token.Type != TokenType.CurlyBracketOpen || !valid) return SkipDeclarations(token);
+
             _nodes.Push(rule);
             var end = FillRules(rule);
             rule.StylesheetText = CreateView(start, end);
@@ -792,75 +817,81 @@ namespace ExCSS
                 {
                     // CSS Nesting: a nested style rule was parsed and attached to the enclosing rule.
                 }
-                else
-                {
-                    // RawDeclarations keeps every declaration exactly as it was written: no typed
-                    // property, so no value normalisation, and no shorthand expansion below. For a
-                    // host whose property set is not the web's, that expansion is wrong rather than
-                    // merely unhelpful.
-                    var createDeclaration = _parser.Options.RawDeclarations
-                        ? RawDeclaration
-                        : new Func<string, Property>(PropertyFactory.Instance.Create);
-                    var sourceProperty = CreateDeclarationWith(createDeclaration, ref token);
-                    var resolvedProperties = new[] {sourceProperty};
-
-                    if (sourceProperty is {HasValue: true})
-                    {
-                        // For shorthand properties we need to first find out what alternate set of properties they will
-                        // end up resolving into so that we can compare them with their previously parsed counterparts (if any)
-                        // and determine which one takes priority over the other.
-                        // Example 1: "margin-left: 5px !important; text-align:center; margin: 3px;";
-                        // Example 2: "margin: 5px !important; text-align:center; margin-left: 3px;";
-                        if (sourceProperty is ShorthandProperty shorthandProperty)
-                        {
-                            if (shorthandProperty.DeclaredValue.Original.ContainsFunction(FunctionNames.Var))
-                            {
-                                // A var() reference can't be split into per-longhand slices at parse time -
-                                // the referenced custom property's value is only known per-element, at cascade
-                                // time. Keep the shorthand declaration whole so substitution and expansion can
-                                // happen once it is resolved (CSS Variables 1 3.2).
-                                resolvedProperties = new Property[] { shorthandProperty };
-                            }
-                            else
-                            {
-                                resolvedProperties = PropertyFactory.Instance.CreateLonghandsFor(shorthandProperty.Name);
-                                shorthandProperty.Export(resolvedProperties);
-                            }
-                        }
-
-                        foreach (var resolvedProperty in resolvedProperties)
-                        {
-                            // The following relies on the fact that the tokens are processed in 
-                            // top-to-bottom order of how they are defined in the parsed style declaration.
-                            // This handles exposing the correct value for a property when it appears multiple 
-                            // times in the same style declaration.
-                            // Example: "background-color:green !important; text-align:center; background-color:yellow;";
-                            // In this example even though background-color yellow is defined last, the previous value
-                            // of green should be the one exposed given it is tagged as important.
-                            // ------------------------------------------------------------------------------------------
-                            // Only set this property if one of the following conditions is true:
-                            // a) It was not previously added or...
-                            // b) The previously added property is not tagged as important or ...
-                            // c) The previously added property is tagged as important but so is this new one.
-                            var shouldSetProperty =
-                                !finalProperties.TryGetValue(resolvedProperty.Name, out var previousProperty)
-                                || !previousProperty.IsImportant
-                                || resolvedProperty.IsImportant;
-
-                            if (shouldSetProperty)
-                            {
-                                style.SetProperty(resolvedProperty);
-                                finalProperties[resolvedProperty.Name] = resolvedProperty;
-                            }
-                        }
-                    }
-                }
+                else FillDeclaration(style, finalProperties, ref token);
 
                 ParseComments(ref token);
             }
 
             _nodes.Pop();
             return token.Position;
+        }
+
+        /// <summary>
+        /// One declaration, read from <paramref name="token"/> and set on <paramref name="style"/>
+        /// unless an important declaration of the same property already is.
+        /// </summary>
+        private void FillDeclaration(StyleDeclaration style, Dictionary<string, IProperty> finalProperties, ref Token token)
+        {
+                // RawDeclarations keeps every declaration exactly as it was written: no typed
+                // property, so no value normalisation, and no shorthand expansion below. For a
+                // host whose property set is not the web's, that expansion is wrong rather than
+                // merely unhelpful.
+                var createDeclaration = _parser.Options.RawDeclarations
+                    ? RawDeclaration
+                    : new Func<string, Property>(PropertyFactory.Instance.Create);
+                var sourceProperty = CreateDeclarationWith(createDeclaration, ref token);
+                var resolvedProperties = new[] {sourceProperty};
+
+                if (sourceProperty is {HasValue: true})
+                {
+                    // For shorthand properties we need to first find out what alternate set of properties they will
+                    // end up resolving into so that we can compare them with their previously parsed counterparts (if any)
+                    // and determine which one takes priority over the other.
+                    // Example 1: "margin-left: 5px !important; text-align:center; margin: 3px;";
+                    // Example 2: "margin: 5px !important; text-align:center; margin-left: 3px;";
+                    if (sourceProperty is ShorthandProperty shorthandProperty)
+                    {
+                        if (shorthandProperty.DeclaredValue.Original.ContainsFunction(FunctionNames.Var))
+                        {
+                            // A var() reference can't be split into per-longhand slices at parse time -
+                            // the referenced custom property's value is only known per-element, at cascade
+                            // time. Keep the shorthand declaration whole so substitution and expansion can
+                            // happen once it is resolved (CSS Variables 1 3.2).
+                            resolvedProperties = new Property[] { shorthandProperty };
+                        }
+                        else
+                        {
+                            resolvedProperties = PropertyFactory.Instance.CreateLonghandsFor(shorthandProperty.Name);
+                            shorthandProperty.Export(resolvedProperties);
+                        }
+                    }
+
+                    foreach (var resolvedProperty in resolvedProperties)
+                    {
+                        // The following relies on the fact that the tokens are processed in 
+                        // top-to-bottom order of how they are defined in the parsed style declaration.
+                        // This handles exposing the correct value for a property when it appears multiple 
+                        // times in the same style declaration.
+                        // Example: "background-color:green !important; text-align:center; background-color:yellow;";
+                        // In this example even though background-color yellow is defined last, the previous value
+                        // of green should be the one exposed given it is tagged as important.
+                        // ------------------------------------------------------------------------------------------
+                        // Only set this property if one of the following conditions is true:
+                        // a) It was not previously added or...
+                        // b) The previously added property is not tagged as important or ...
+                        // c) The previously added property is tagged as important but so is this new one.
+                        var shouldSetProperty =
+                            !finalProperties.TryGetValue(resolvedProperty.Name, out var previousProperty)
+                            || !previousProperty.IsImportant
+                            || resolvedProperty.IsImportant;
+
+                        if (shouldSetProperty)
+                        {
+                            style.SetProperty(resolvedProperty);
+                            finalProperties[resolvedProperty.Name] = resolvedProperty;
+                        }
+                    }
+                }
         }
 
         /// <summary>
@@ -895,8 +926,9 @@ namespace ExCSS
         /// <c>@supports</c>, <c>@container</c> or <c>@starting-style</c>. Its declarations belong to
         /// an implicit style rule carrying the enclosing rule's own selector, so
         /// <c>.a { @media (...) { color: red } }</c> is <c>@media (...) { :is(.a) { color: red } }</c>
-        /// (CSS Nesting 1 &#xA7;3). Returns true with <paramref name="token"/> advanced past the
-        /// block, false for an at-rule that cannot appear here, leaving the caller to skip it.
+        /// (CSS Nesting 1 &#xA7;3). A nested <c>@scope</c> is the exception: only its start selector
+        /// nests, and its block holds scoped rules. Returns true with <paramref name="token"/>
+        /// advanced past the block, false for an at-rule that cannot appear here, leaving the caller to skip it.
         /// </summary>
         private bool TryCreateNestedConditionalRule(ref Token token)
         {
@@ -909,10 +941,12 @@ namespace ExCSS
             else if (token.Data.Isi(RuleNames.Supports)) rule = new SupportsRule(_parser);
             else if (token.Data.Isi(RuleNames.Container)) rule = new ContainerRule(_parser);
             else if (token.Data.Isi(RuleNames.StartingStyle)) rule = new StartingStyleRule(_parser);
+            else if (token.Data.Isi(RuleNames.Scope)) rule = new ScopeRule(_parser);
             else return false;
 
             var start = token.Position;
             var parentSelector = NestingBase(parent);
+            var valid = true;
 
             token = NextToken();
             _nodes.Push(rule);
@@ -929,14 +963,30 @@ namespace ExCSS
                 case ContainerRule containerRule:
                     FillContainerPrelude(containerRule, ref token);
                     break;
+                case ScopeRule scopeRule:
+                    // The start selector nests in the enclosing rule the way a nested selector does; the
+                    // limit and the rules in the block are relative to the scoping root instead.
+                    valid = scopeRule.SetPrelude(ReadRawPrelude(ref token));
+                    if (valid && scopeRule.StartText != null) scopeRule.StartText = ResolveNestedSelector(scopeRule.StartText, parentSelector);
+                    break;
             }
 
             ParseComments(ref token);
 
-            if (token.Type != TokenType.CurlyBracketOpen)
+            if (token.Type != TokenType.CurlyBracketOpen || !valid)
             {
                 _nodes.Pop();
                 SkipDeclarations(token);
+                token = NextToken();
+                return true;
+            }
+
+            if (rule is ScopeRule)
+            {
+                var scopeEnd = FillRules(rule);
+                _nodes.Pop();
+                rule.StylesheetText = CreateView(start, scopeEnd);
+                parent.AddNestedRule(rule);
                 token = NextToken();
                 return true;
             }
@@ -1051,10 +1101,31 @@ namespace ExCSS
             var preludeText = _lexer.Source.Text.Substring(preludeStart, braceStart - preludeStart);
 
             var resolvedText = parent == null ? null : ResolveNestedSelector(preludeText, NestingBase(parent));
-            var selector = resolvedText == null ? null : _parser.ParseSelector(resolvedText);
+            var rule = CreateStyleRule(resolvedText);
 
-            // Always consume the block (via a rule pushed on _nodes so nested-within-nested resolves) to
-            // keep the parser in sync; only attach it when the selector actually resolved.
+            if (parent != null && rule != null) parent.AddNestedRule(rule);
+        }
+
+        /// <summary>
+        /// A style rule written directly in a <c>@scope</c> block, or in a conditional rule inside
+        /// one. Its selector is scoped rather than nested: <c>&amp;</c> is the scoping root at zero
+        /// specificity, and a branch that starts with a combinator is relative to it. The rest is
+        /// left as written, since which elements are in scope is decided when the rule is matched.
+        /// </summary>
+        private StyleRule CreateScopedStyleRule(int preludeStart, int braceStart)
+        {
+            var preludeText = _lexer.Source.Text.Substring(preludeStart, braceStart - preludeStart);
+            return CreateStyleRule(ResolveScopedSelector(preludeText));
+        }
+
+        /// <summary>
+        /// Builds a style rule from resolved selector text and consumes its declaration block from
+        /// the live stream. The block is consumed either way, to keep the parser in sync; null comes
+        /// back when the selector did not parse, and the rule is nobody's.
+        /// </summary>
+        private StyleRule CreateStyleRule(string resolvedText)
+        {
+            var selector = resolvedText == null ? null : _parser.ParseSelector(resolvedText);
             var rule = new StyleRule(_parser);
 
             if (selector != null)
@@ -1069,7 +1140,58 @@ namespace ExCSS
             FillDeclarations(rule.Style);
             _nodes.Pop();
 
-            if (parent != null && selector != null) parent.AddNestedRule(rule);
+            return selector == null ? null : rule;
+        }
+
+        /// <summary>
+        /// Resolves a scoped selector's prelude per CSS Cascade 6: each <c>&amp;</c> becomes
+        /// <c>:where(:scope)</c>, and a branch that is a relative selector (<c>&gt; img</c>) gets
+        /// <c>:scope</c> in front. A branch with neither is left alone, as it is matched against
+        /// elements in scope and needs no anchor.
+        /// </summary>
+        private static string ResolveScopedSelector(string prelude)
+        {
+            var branches = SplitSelectorList(prelude);
+
+            for (var i = 0; i < branches.Count; i++)
+            {
+                var branch = SubstituteNestingSelector(branches[i].Trim(), ScopeRootSelector, out _);
+                if (branch.Length > 0 && (branch[0] == '>' || branch[0] == '+' || branch[0] == '~')) branch = ":scope " + branch;
+                branches[i] = branch;
+            }
+
+            return string.Join(", ", branches);
+        }
+
+        // Splits on the commas that are outside every bracket and string.
+        private static List<string> SplitSelectorList(string text)
+        {
+            var parts = new List<string>();
+            var start = 0;
+            var depth = 0;
+            var quote = '\0';
+
+            for (var i = 0; i < text.Length; i++)
+            {
+                var c = text[i];
+
+                if (quote != '\0')
+                {
+                    if (c == '\\') i++;
+                    else if (c == quote) quote = '\0';
+                }
+                else if (c == '"' || c == '\'') quote = c;
+                else if (c == '(' || c == '[') depth++;
+                else if (c == ')' || c == ']') { if (depth > 0) depth--; }
+                else if (c == ',' && depth == 0)
+                {
+                    parts.Add(text.Substring(start, i - start));
+                    start = i + 1;
+                }
+            }
+
+            parts.Add(text.Substring(start));
+            return parts;
         }
 
         /// <summary>
@@ -1081,26 +1203,32 @@ namespace ExCSS
         /// </summary>
         private static string ResolveNestedSelector(string prelude, string parentText)
         {
-            var trimmed = prelude.Trim();
             var parentIs = ":is(" + (string.IsNullOrEmpty(parentText) ? "*" : parentText) + ")";
+            var resolved = SubstituteNestingSelector(prelude.Trim(), parentIs, out var hasNestingSelector);
+            return hasNestingSelector ? resolved : parentIs + " " + resolved;
+        }
 
-            // Substitute `&` token-aware: only a `&` that is a real nesting selector is replaced, never a
-            // `&` inside a string/attribute value (e.g. `[data-x="a&b"]`), which must be preserved. This
-            // also decides the "has &" branch correctly, so a prelude whose only `&` is inside a string is
-            // still scoped under the parent (:is(parent) <prelude>) rather than mis-taking the replace path.
+        /// <summary>
+        /// Replaces every <c>&amp;</c> that is a nesting selector with <paramref name="replacement"/>,
+        /// token-aware: a <c>&amp;</c> inside a string or attribute value (<c>[data-x="a&amp;b"]</c>) is
+        /// kept, and does not count as one. That is also what decides <paramref name="found"/>, so
+        /// a prelude whose only <c>&amp;</c> is quoted still takes the implicit-descendant form.
+        /// </summary>
+        private static string SubstituteNestingSelector(string text, string replacement, out bool found)
+        {
             var sb = Pool.NewStringBuilder();
             var hasNestingSelector = false;
             var quote = '\0';
 
-            for (var i = 0; i < trimmed.Length; i++)
+            for (var i = 0; i < text.Length; i++)
             {
-                var c = trimmed[i];
+                var c = text[i];
 
                 if (quote != '\0')
                 {
                     sb.Append(c);
-                    if (c == '\\' && i + 1 < trimmed.Length)
-                        sb.Append(trimmed[++i]);   // escaped char inside a string — copy verbatim
+                    if (c == '\\' && i + 1 < text.Length)
+                        sb.Append(text[++i]);   // escaped char inside a string — copy verbatim
                     else if (c == quote)
                         quote = '\0';
                     continue;
@@ -1115,7 +1243,7 @@ namespace ExCSS
                         break;
                     case '&':
                         hasNestingSelector = true;
-                        sb.Append(parentIs);
+                        sb.Append(replacement);
                         break;
                     default:
                         sb.Append(c);
@@ -1123,7 +1251,8 @@ namespace ExCSS
                 }
             }
 
-            return hasNestingSelector ? sb.ToPool() : parentIs + " " + sb.ToPool();
+            found = hasNestingSelector;
+            return sb.ToPool();
         }
 
         private static readonly Func<string, Property> RawDeclaration = name => new UnknownProperty(name);
@@ -1529,6 +1658,9 @@ namespace ExCSS
             var token = NextToken();
             ParseComments(ref token);
 
+            StyleRule implicitRule = null;
+            Dictionary<string, IProperty> implicitProperties = null;
+
             while (token.IsNot(TokenType.EndOfFile, TokenType.CurlyBracketClose))
             {
                 // "Consume a block's contents" discards a <semicolon-token> outright, exactly as it does a
@@ -1549,14 +1681,53 @@ namespace ExCSS
                     continue;
                 }
 
-                var rule = CreateRule(token);
+                // In a @scope block a style rule is scoped, not nested, and a declaration on its own
+                // styles the scoping root (CSS Cascade 6). A run of declarations shares one implicit rule.
+                if (token.Type != TokenType.AtKeyword && InScopeBlock)
+                {
+                    var preludeStart = _markBeforeLastToken;
+
+                    if (IsNestedRuleAhead(ref token, out var braceStart))
+                    {
+                        implicitRule = null;
+                        group.Rules.Add(CreateScopedStyleRule(preludeStart, braceStart));
+                    }
+                    else
+                    {
+                        if (implicitRule == null)
+                        {
+                            implicitRule = new StyleRule(_parser) { Selector = _parser.ParseSelector(ScopeRootSelector) };
+                            AttachSelectorText(implicitRule, ScopeRootSelector);
+                            implicitProperties = new Dictionary<string, IProperty>(StringComparer.OrdinalIgnoreCase);
+                            group.Rules.Add(implicitRule);
+                        }
+
+                        FillDeclaration(implicitRule.Style, implicitProperties, ref token);
+                        ParseComments(ref token);
+                        continue;
+                    }
+                }
+                else
+                {
+                    implicitRule = null;
+                    group.Rules.Add(CreateRule(token));
+                }
+
                 token = NextToken();
                 ParseComments(ref token);
-                group.Rules.Add(rule);
             }
 
             return token.Position;
         }
+
+        /// <summary>
+        /// Whether the rules being read belong to a <c>@scope</c> block rather than to a style rule:
+        /// the nearest of the two on the stack is the scope, however many conditional rules are between.
+        /// </summary>
+        private bool InScopeBlock => _nodes.FirstOrDefault(node => node is StyleRule || node is ScopeRule) is ScopeRule;
+
+        /// <summary>The scoping root at zero specificity, which is what <c>&amp;</c> and a bare declaration mean in a <c>@scope</c> block.</summary>
+        private const string ScopeRootSelector = ":where(:scope)";
 
         private void FillMediaList(MediaList list, TokenType end, ref Token token)
         {
