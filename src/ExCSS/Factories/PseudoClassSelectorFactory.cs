@@ -61,6 +61,7 @@ namespace ExCSS
                     PseudoClassNames.OutOfRange,
                     PseudoClassNames.Optional,
                     PseudoClassNames.Shadow,
+                    PseudoClassNames.Host,
                 }
                 .ToDictionary(x => x, PseudoClassSelector.Create);
 

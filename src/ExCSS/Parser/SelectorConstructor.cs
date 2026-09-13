@@ -57,7 +57,8 @@ namespace ExCSS
                 {PseudoClassNames.Matches, ctx => new MatchesFunctionState(ctx, PseudoClassNames.Matches)},
                 {PseudoClassNames.Is, ctx => new MatchesFunctionState(ctx, PseudoClassNames.Is)},
                 {PseudoClassNames.Where, ctx => new MatchesFunctionState(ctx, PseudoClassNames.Where)},
-                {PseudoClassNames.HostContext, ctx => new HostContextFunctionState(ctx)}
+                {PseudoClassNames.Host, ctx => new HostFunctionState(ctx, PseudoClassNames.Host)},
+                {PseudoClassNames.HostContext, ctx => new HostFunctionState(ctx, PseudoClassNames.HostContext)}
             };
 
         public bool IsValid => _valid && _ready;
@@ -707,13 +708,17 @@ namespace ExCSS
             }
         }
 
-        private sealed class HostContextFunctionState : FunctionState
+        // :host() and :host-context() take the same shape -- a selector the shadow host, or one of its
+        // ancestors, has to match -- so one state serves both and only the keyword it prints differs.
+        private sealed class HostFunctionState : FunctionState
         {
             private readonly SelectorConstructor _selector;
+            private readonly string _keyword;
 
-            public HostContextFunctionState(SelectorConstructor parent)
+            public HostFunctionState(SelectorConstructor parent, string keyword)
             {
                 _selector = parent.CreateChild();
+                _keyword = keyword;
             }
 
             protected override bool OnToken(Token token)
@@ -736,7 +741,7 @@ namespace ExCSS
                     return null;
                 }
 
-                var code = PseudoClassNames.HostContext.StylesheetFunction(sel.Text);
+                var code = _keyword.StylesheetFunction(sel.Text);
                 return PseudoClassSelector.Create(code);
 
             }

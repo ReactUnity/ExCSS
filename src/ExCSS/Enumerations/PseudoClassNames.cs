@@ -50,6 +50,7 @@
         public static readonly string Not = "not";
         public static readonly string Lang = "lang";
         public static readonly string Contains = "contains";
+        public static readonly string Host = "host";
         public static readonly string HostContext = "host-context";
         public static readonly string Separator = ":";
     }
